@@ -1,165 +1,206 @@
-# Multi-Agent Cooperative Pathfinding with PBRS
+# Multi-Agent Cooperative Pathfinding with Potential-Based Reward Shaping (PBRS)
 
-This project implements and compares multiple **reinforcement learning** approaches for a **multi-agent cooperative pathfinding** task, with a focus on the impact of **Potential-Based Reward Shaping (PBRS)**.
+This repository implements a **multi-agent reinforcement learning** experiment for **cooperative pathfinding** on a grid. It compares:
 
-We compare:
+- **Baseline**: Independent tabular Q-Learning  
+- **Centralized joint DQN**  
+- **Hybrid**: Decentralized policy-gradient actors + centralized DQN critic  
 
-- **Baseline**: Tabular Q-learning
-- **Centralized DQN**
-- **Hybrid**: Decentralized Actor–Critic with a Centralized DQN Critic  
-- Each **with and without PBRS**
-
-The main result: **PBRS dramatically accelerates learning**, especially for the centralized DQN.
+Each method is evaluated **with and without Potential-Based Reward Shaping (PBRS)**. The code is set up for **multi-seed experiments**, CSV summaries, and convergence analysis.
 
 ---
 
-## 📌 Problem Overview
+## 🧩 Problem & Environment
 
-- Environment: grid-world cooperative pathfinding
-- Objective: multiple agents must reach their goals **without collisions**
-- Setting: **cooperative** multi-agent RL (agents share a common reward / objective)
+The environment is a small **grid-world** where multiple agents must **cooperate** to reach their respective goals.
 
-> 🔧 Adjust this section to match your exact environment (grid size, number of agents, etc.)
+Key details (as implemented in `GridWorldMA`):
 
-Example (replace with your actual setup):
-
-- Grid size: `N x N` (e.g., 8×8 or 10×10)
-- Number of agents: e.g., 3
-- Obstacles: static or randomly placed per episode
-- Episode ends when:
+- Grid size: **6 × 6**
+- Number of agents: **2**
+- Obstacles:
+  - Random interior obstacles with `obstacle_fraction = 0.08`
+- Episode limit:
+  - `max_steps = 70` steps per episode
+- Actions per agent:
+  - Stay, Up, Down, Left, Right (5 discrete actions)
+- Rewards:
+  - Step cost: `-0.05 * n_agents`
+  - Bump into wall/obstacle: `-0.05` per bump
+  - Collision between agents: `-1.0` per collision
+  - Reaching goal: `+10.0` (once per agent)
+- Episodes end when:
   - All agents reach their goals, or
-  - A maximum number of steps is reached
-- Success metric: all agents reach their goals without collisions
+  - `max_steps` is reached
+
+The state encodes:
+
+- The grid (flattened)
+- Agent positions (normalized)
+- Goal positions (normalized)
 
 ---
 
-## 🧠 Methods
+## 🧠 Algorithms
 
-### 1. Baseline: Tabular Q-Learning
+All three algorithms assume **2 agents** and operate on the same environment.
 
-- Independent / joint state representation (depending on your design)
-- Standard Q-learning update:
-  
-  \[
-  Q(s, a) \leftarrow Q(s, a) + \alpha \big[r + \gamma \max_{a'} Q(s', a') - Q(s, a)\big]
-  \]
+### 1. Baseline: Independent Tabular Q-Learning
 
-Used as a **simple baseline** to illustrate sample inefficiency and difficulty without shaping.
+Function: `baseline_q_learning(...)`
+
+- One tabular Q-table per agent.
+- Each agent acts ε-greedily using its own Q-table.
+- State encoding for each agent includes:
+  - Own position
+  - Other agent’s position
+  - Own goal
+
+Used as a **simple baseline** to show how hard the task is without function approximation and with sparse-ish rewards.
 
 ---
 
-### 2. Centralized DQN
+### 2. Centralized Joint DQN
 
-- Single DQN that sees a **centralized representation** of the environment:
-  - Full grid / all agents’ states
-- Outputs joint actions or per-agent actions (depending on implementation)
+Function: `train_centralized_dqn(...)`
+
+- A single DQN sees the **centralized state**:
+  - Full grid + both agents’ positions + both goals.
+- Outputs Q-values over **joint actions**:
+  - For 2 agents with 5 actions each → 25 joint actions.
 - Uses:
   - Replay buffer
-  - ε-greedy exploration
-  - Target network
+  - Target network with soft updates (τ = 0.01)
+  - ε-greedy exploration over joint actions
 
-This model performs best when combined with PBRS.
+This is a strong fully centralized baseline.
 
 ---
 
-### 3. Hybrid: Decentralized Actor–Critic + Centralized DQN Critic
+### 3. Hybrid: Decentralized PG Actors + Centralized DQN Critic
+
+Function: `train_hybrid(...)`
 
 - **Actors**:
-  - One policy per agent (decentralized execution)
-  - Each actor conditions on its **local observations**
+  - One policy (actor network) per agent.
+  - Each actor sees:
+    - Grid
+    - Own position
+    - Other agent(s)’ positions
+    - Own goal
+  - Outputs a categorical distribution over actions and samples from it.
 - **Critic**:
-  - Centralized DQN-based critic (uses global state / joint observations)
-  - Provides value estimates / targets for updating the actors
+  - Centralized DQN over the full state and joint actions (same architecture as centralized DQN).
+  - Used to compute an **advantage-like signal** for the actors.
+- Actors are trained via a policy-gradient style update with:
+  - Advantage normalization
+  - Entropy regularization (for exploration)
 
-This hybrid design offers a middle ground: more scalable than a fully centralized policy, but more informed than purely decentralized Q-learning.
-
-> ✏️ You can add a diagram (PNG) showing:
-> - Global state going into centralized critic
-> - Local observations going into decentralized actors
-
----
-
-## 🎯 Potential-Based Reward Shaping (PBRS)
-
-We use **potential-based reward shaping** to accelerate learning without changing the optimal policy.
-
-General shaping function:
-
-\[
-F(s, s') = \gamma \, \Phi(s') - \Phi(s)
-\]
-
-where:
-
-- \(\Phi(s)\) is a **potential function** over states,
-- \(\gamma\) is the discount factor.
-
-Example potential function (adjust to your design):
-
-- \(\Phi(s)\) = negative sum of Manhattan distances from each agent to its goal  
-  (so higher potential = agents closer to their goals)
-
-Shaped reward:
-
-\[
-r' = r + \text{potential\_coef} \cdot F(s, s')
-\]
-
-In this project, we tested configurations such as:
-
-- `potential_coef = 0.35` (PBRS ON)
-- `potential_coef = 0.0` (PBRS OFF)
+This gives **decentralized execution** with **centralized training**.
 
 ---
 
-## 📊 Results
+## ⚙️ Potential-Based Reward Shaping (PBRS)
 
-We measure **how many episodes it takes** for each method to reach a target **success rate = 0.80**.
+PBRS is implemented directly inside the environment (`GridWorldMA.step`).
+
+- Potential function:
+
+  - \(\Phi(s) = - \sum_i \text{ManhattanDistance}(\text{agent}_i, \text{goal}_i)\)  
+  - i.e., negative total Manhattan distance from all agents to their goals.
+
+- Shaped reward:
+
+  \[
+  r' = r + \text{potential\_coef} \cdot \big(\gamma_\Phi \Phi(s') - \Phi(s)\big)
+  \]
+
+Where:
+
+- `potential_coef` controls shaping strength (β).
+- `gamma_for_potential` (γₚ) is used inside the shaping term.
+- This form is **potential-based reward shaping**, which preserves the optimal policy but can greatly speed up learning.
+
+Two configurations are used:
+
+- **PBRS ON**: `potential_coef = 0.35`
+- **PBRS OFF**: `potential_coef = 0.0`
+
+---
+
+## 📊 Experimental Setup
+
+Global settings (from the script):
+
+- Seeds: **[3, 7, 11, 19, 23]**
+- Maximum episodes per run: `MAX_TOTAL_EPISODES = 3200`
+- Moving average window for success: `WINDOW = 40`
+- Success threshold: `TARGET_SUCCESS = 0.80`
+
+For each configuration (PBRS ON / PBRS OFF) and each seed:
+
+- The script runs:
+  - `baseline_q_learning(...)`
+  - `train_centralized_dqn(...)`
+  - `train_hybrid(...)`
+- For each method and seed, it computes:
+  - **Episodes to reach 0.80 success** (based on moving average).
+  - **Final success rate** (moving average at the end).
+
+Results across seeds are aggregated using `aggregate_stats(...)`, producing:
+
+- Mean and std of episodes to threshold
+- Mean and std of final success rate
+- Number of seeds
+
+Summaries are saved as:
+
+- `summary_pbrs_on.csv`
+- `summary_pbrs_off.csv`
+
+in the working directory.
+
+---
+
+## 📈 Key Results
+
+Below are the **average episodes (over seeds)** required for each method to reach a **success rate of 0.80** (moving average over 40 episodes).
 
 ### PBRS ON (`potential_coef = 0.35`)
 
-| Method                                        | Episodes to 0.80 success |
-|----------------------------------------------|---------------------------|
-| Baseline Q-learning                          | 1376.0                    |
-| Centralized DQN                              | **109.6**                 |
-| Hybrid (Decentralized Actor–Critic + DQN)    | 392.8                     |
+| Method                              | Episodes to 0.80 success (mean) |
+|------------------------------------|----------------------------------|
+| Baseline Q-Learning                | 1376.0                           |
+| Centralized DQN                    | **109.6**                        |
+| Hybrid (Decentralized + Central)   | 392.8                            |
 
 ### PBRS OFF (`potential_coef = 0.0`)
 
-| Method                                        | Episodes to 0.80 success |
-|----------------------------------------------|---------------------------|
-| Baseline Q-learning                          | ∞ (did not converge)      |
-| Centralized DQN                              | 2514.8                    |
-| Hybrid (Decentralized Actor–Critic + DQN)    | 1543.6                    |
+| Method                              | Episodes to 0.80 success (mean) |
+|------------------------------------|----------------------------------|
+| Baseline Q-Learning                | ∞ (did not converge)             |
+| Centralized DQN                    | 2514.8                           |
+| Hybrid (Decentralized + Central)   | 1543.6                           |
 
-### Key Takeaways
+### Interpretation
 
-- **PBRS significantly improves learning efficiency**
-  - With PBRS ON, both **centralized DQN** and **hybrid** models reach the success threshold **much faster**.
-- **Centralized DQN + PBRS is the strongest setup**
-  - Converges in ~**109.6 episodes**, compared to **2514.8** without PBRS.
-- **Hybrid model is a solid middle ground**
-  - Faster than the baseline, with decentralized execution and some centralized coordination via the critic.
-- **Baseline without PBRS fails to converge**
-  - Illustrates how hard the task is under sparse or unshaped rewards.
-
-> Note: Replace these numbers with updated results if you rerun with more seeds, different hyperparameters, etc.
+- **PBRS massively accelerates learning** for both DQN and Hybrid.
+- **Centralized DQN + PBRS** is the most sample-efficient configuration in this setup.
+- The **Hybrid** method is:
+  - Slower than centralized DQN with PBRS,
+  - But significantly faster than baseline and more robust than unshaped training.
+- The **baseline without PBRS** fails to reach the target success within the maximum episode limit.
 
 ---
 
-## 📈 Plots & Visualizations
+## 🧪 What the Script Actually Does
 
-You can include (recommended):
+The main entry point is at the bottom of the file:
 
-- **Learning curves**: success rate vs episodes for each method
-- **PBRS ON vs OFF** comparisons
-- **GIF demos** of agents moving in the grid-world
+```python
+if __name__ == "__main__":
+    # Quick single-run demo (for plots):
+    # base, hyb = run_single_experiment(BASE_ENV, seed=3)
 
-Example (once you generate them):
-
-```text
-assets/
-  curves_pbrs_on_off.png
-  dqn_vs_hybrid.png
-  demo_pbrs_on.gif
-  demo_pbrs_off.gif
+    # Full thesis suite (multi-seed + ablations):
+    results = run_thesis_suite()
